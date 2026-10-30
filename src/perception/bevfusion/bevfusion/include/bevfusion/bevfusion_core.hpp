@@ -28,67 +28,18 @@
 
 namespace wato::perception::bevfusion
 {
-
-/**
- * @brief Input parameters for CUDA-BEVFusion
- */
-struct BEVFusionInputConfig
+/** @brief ONNX weight paths and segmentation layout for a specific model version. */
+struct BEVFusionONNXConfig
 {
-  //  --- Model Files (paths to TensorRT .plan files and ONNX model) ---
-  std::string model_dir;
   std::string build_dir;
-  std::string camera_backbone_plan;  // Extracts image features
-  std::string camera_vtransform_plan;  // Projects image features to BEV
-  std::string fuser_plan;  // Fuses image and LiDAR BEV features
-  std::string head_bbox_plan;  // Predicts 3D bounding boxes
-  std::string lidar_backbone_onnx;  // Extracts LiDAR features
-
-  // --- Camera Normalization & Preprocessing ---
-  int image_width = 1600;  // Input image resolution
-  int image_height = 900;
-  int norm_output_width = 704;  // Output resolution after resize (Network input)
-  int norm_output_height = 256;
-  int num_cameras = 6;
-  float resize_lim = 0.55f;  // Multiplier for the shorter side of the image to be resized to
-  std::string interpolation = "bilinear";  // Interpolation method for resizing
-  std::vector<float> norm_mean = {0.485f, 0.456f, 0.406f};  // Mean subtraction value per RGB channel
-  std::vector<float> norm_std = {0.229f, 0.224f, 0.225f};  // Std deviation value per RGB channel
-  float norm_scale = 1.0f / 255.0f;  // Input image pixel scaling factor ([0,255] -> [0,1])
-  float norm_bias = 0.0f;  // Bias offset applied to normalized pixels
-
-  // --- Lidar Voxelization & SCN ---
-  std::vector<float> min_range = {-54.0f, -54.0f, -5.0f};  // Min 3D range (x,y,z) in meters for voxelization
-  std::vector<float> max_range = {54.0f, 54.0f, 3.0f};  // Max 3D range
-  std::vector<float> voxel_size = {0.075f, 0.075f, 0.2f};  // Size of each voxel (x,y,z) in meters
-  int max_points_per_voxel = 10;  // Max # of points to sample in 1 voxel
-  int max_points = 300000;  // Upper limit on total # of lidar points processed
-  int max_voxels = 160000;  // Upper limit on total # of voxels generated on the grid
-  int num_features = 5;  // Dimensions per lidar point (x, y, z, intensity, sweep time lag)
-  std::string scn_order = "XYZ";  // SCN coordinate order constraint
-  std::string precision = "int8";  // "fp16" or "int8". Used by LiDAR ONNX parser.
-
-  // --- Camera Geometry Mapping (Depth & Grid) ---
-  std::vector<float> xbound = {-54.0f, 54.0f, 0.3f};  // BEV grid X limits [min, max, step] in meters
-  std::vector<float> ybound = {-54.0f, 54.0f, 0.3f};  // BEV grid Y limits
-  std::vector<float> zbound = {-10.0f, 10.0f, 20.0f};  // BEV grid Z limits
-  std::vector<float> dbound = {1.0f, 60.0f, 0.5f};  // Depth bin limits for feature projection
-  std::vector<int> geometry_dim = {360, 360, 80};  // Voxel dimensions (width, height, depth_bin) in BEV space
-  int feat_width = 88;  // Feature map width after projection (by camera backbone)
-  int feat_height = 32;  // Feature map height after projection (by camera backbone)
-
-  // --- Bounding Box Post-processing & Head ---
-  int out_size_factor = 8;  // Resolution downsampling factor of the detection head output relative to voxels
-  std::vector<float> transbbox_pc_range = {
-    -54.0f, -54.0f};  // 2D point cloud start boundary [min_x, min_y] for the head
-  std::vector<float> transbbox_voxel_size = {0.075f, 0.075f};  // 2D voxel size [dX, dY] in the horizontal plane
-  std::vector<float> post_center_range_start = {-61.2f, -61.2f, -10.0f};  // BBox center filter lower boundary [X, Y, Z]
-  std::vector<float> post_center_range_end = {61.2f, 61.2f, 10.0f};  // BBox center filter upper boundary [X, Y, Z]
-  float confidence_threshold = 0.3f;  // Detection score threshold (detections below this score are discarded)
-  bool sorted_bboxes = true;  // True to sort bounding boxes descending by confidence score
-
-  // --- BEV Map Segmentation ---
-  bool seg_enabled = false;  // True to produce a BEV segmentation map alongside detections
-  int seg_num_classes = 6;  // Number of map classes (6 for the nuScenes map classes)
+  std::string lidar_backbone;
+  std::string head_bbox;
+  std::string head_segmap;
+  std::string camera_backbone;
+  std::string camera_vtransform;
+  std::string fuser;
+  bool seg_enabled = false;
+  int seg_num_classes = 6;
 };
 
 /**
@@ -172,10 +123,11 @@ class BEVFusionCore
 {
 public:
   /**
-   * @brief Construct the core with a configuration
-   * @param config Configuration for BEVFusion
+   * @brief Construct the core
+   * @param param inference engine parameters of BEVFusion model
+   * @param onnx_config file paths to ONNX weights for specific model layers
    */
-  explicit BEVFusionCore(const BEVFusionInputConfig & config);
+  explicit BEVFusionCore(::bevfusion::CoreParameter param, BEVFusionONNXConfig onnx_config);
   ~BEVFusionCore();
 
   /**
@@ -193,7 +145,7 @@ public:
    * @return Vector of detected 3D bounding boxes
    *
    * @note lidar_points is a flattened 1D vector containing all the raw LiDAR data for a single frame
-   *       - lidar_points.size() equals num_points * config_.num_features.
+   *       - lidar_points.size() equals num_points * param_.lidar_scn.voxelization.num_feature.
    *       - The vector looks like [x1, y1, z1, i1, t1, x2, y2, z2, i2, t2, ...],
    *         where (x,y,z) are coordinates, i is intensity and t is the sweep time lag (0 for a single sweep).
    * @note Preconditions:
@@ -262,7 +214,6 @@ private:
   bool compileTrtModel(
     const std::string & name, const std::filesystem::path & onnx_file, const std::filesystem::path & plan_file) const;
 
-  BEVFusionInputConfig config_;
   bool initialized_ = false;
   bool has_calibration_ = false;
   cudaStream_t stream_ = nullptr;
@@ -273,7 +224,10 @@ private:
   // Reused across inference calls to avoid per-frame heap allocation.
   std::vector<__half> lidar_half_buf_;
 
-  // Latest segmentation map, filled by infer() when config_.seg_enabled is true.
+  const ::bevfusion::CoreParameter param_;
+  const BEVFusionONNXConfig onnx_config_;
+
+  // Latest segmentation map, filled by infer() when the seg head is enabled.
   SegMap seg_map_;
 };
 

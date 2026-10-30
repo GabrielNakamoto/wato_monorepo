@@ -121,6 +121,9 @@ private:
    */
   void declareParameters();
 
+  /** @brief Build the CUDA engine parameter struct from ROS params. */
+  ::bevfusion::CoreParameter parameterizeInference();
+
   /**
    * @brief Main processing callback for synced compressed camera and LiDAR data.
    * @param multi_image_msg MultiImageCompressed containing compressed images from multiple cameras
@@ -237,7 +240,7 @@ private:
    */
   bool processLidar(const sensor_msgs::msg::PointCloud2::ConstSharedPtr & lidar_msg, std::vector<float> & lidar_data);
 
-  /**
+/**
    * @brief Validate and normalize an image.
    * @param img The image to validate and normalize
    * @param index The index of the image
@@ -288,7 +291,15 @@ private:
 
   // Core logic
   std::unique_ptr<BEVFusionCore> core_;
-  BEVFusionInputConfig config_;
+
+  // Preprocessing dimensions used outside the core
+  int image_width_{0};
+  int image_height_{0};
+  int norm_output_width_{0};
+  int norm_output_height_{0};
+  float resize_lim_{0.0f};
+  int num_features_{5};
+  int max_points_{300000};
 
   // TF
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -321,6 +332,9 @@ private:
   bool seg_enabled_{false};
   std::vector<std::string> seg_class_names_;
   std::string seg_topic_prefix_;
+
+  // Model file layout resolved from model_dir
+  BEVFusionONNXConfig onnx_config_;
 
   // Publishers
   rclcpp_lifecycle::LifecyclePublisher<vision_msgs::msg::Detection3DArray>::SharedPtr detection_pub_;

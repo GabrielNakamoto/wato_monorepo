@@ -23,7 +23,7 @@
 #undef private
 
 using wato::perception::bevfusion::BEVFusionCore;
-using wato::perception::bevfusion::BEVFusionInputConfig;
+using wato::perception::bevfusion::BEVFusionONNXConfig;
 using wato::perception::bevfusion::makePlaceholderSegMap;
 using wato::perception::bevfusion::SegMap;
 
@@ -34,7 +34,7 @@ public:
   bool forward_called = false;
   int last_num_points = 0;
 
-  std::vector<::bevfusion::head::transbbox::BoundingBox> forward(
+  ::bevfusion::HeadOutputs forward(
     const unsigned char ** /*camera_images*/,
     const nvtype::half * /*lidar_points*/,
     int num_points,
@@ -55,10 +55,10 @@ public:
     box.z_rotation = 9.0f;
     box.score = 0.95f;
     box.id = 2;
-    return {box};
+    return {{box}, ::bevfusion::head::segmap::MapView{}};
   }
 
-  std::vector<::bevfusion::head::transbbox::BoundingBox> forward_no_normalize(
+  ::bevfusion::HeadOutputs forward_no_normalize(
     const nvtype::half * /*camera_normed_images_device*/,
     const nvtype::half * /*lidar_points*/,
     int /*num_points*/,
@@ -87,15 +87,22 @@ public:
   {}
 };
 
-static BEVFusionInputConfig make_test_config()
+static ::bevfusion::CoreParameter make_test_param()
 {
-  BEVFusionInputConfig config;
-  config.camera_backbone_plan = "/dev/null/camera.backbone.plan";
-  config.camera_vtransform_plan = "/dev/null/camera.vtransform.plan";
-  config.fuser_plan = "/dev/null/fuser.plan";
-  config.head_bbox_plan = "/dev/null/head.bbox.plan";
-  config.lidar_backbone_onnx = "/dev/null/lidar.backbone.onnx";
-  return config;
+  ::bevfusion::CoreParameter param;
+  param.camera_model = "/dev/null/camera.backbone.plan";
+  param.camera_vtransform = "/dev/null/camera.vtransform.plan";
+  param.transfusion = "/dev/null/fuser.plan";
+  param.transbbox.model = "/dev/null/head.bbox.plan";
+  return param;
+}
+
+static BEVFusionONNXConfig make_test_onnx()
+{
+  BEVFusionONNXConfig onnx;
+  onnx.build_dir = "/dev/null/build";
+  onnx.lidar_backbone = "/dev/null/lidar.backbone.onnx";
+  return onnx;
 }
 
 // =============================================================================
@@ -107,7 +114,7 @@ static BEVFusionInputConfig make_test_config()
 // =============================================================================
 TEST_CASE("BEVFusionCore: isInitialized is false after construction", "[core][fast]")
 {
-  BEVFusionCore core(make_test_config());
+  BEVFusionCore core(make_test_param(), make_test_onnx());
   REQUIRE_FALSE(core.isInitialized());
 }
 
@@ -118,14 +125,16 @@ TEST_CASE("BEVFusionCore: isInitialized is false after construction", "[core][fa
 // =============================================================================
 TEST_CASE("BEVFusionCore: checkModelFilesExist returns false when model files are missing", "[core][fast]")
 {
-  BEVFusionInputConfig config;
-  config.camera_backbone_plan = "/tmp/nonexistent_path_123/camera.backbone.plan";
-  config.camera_vtransform_plan = "/tmp/nonexistent_path_123/camera.vtransform.plan";
-  config.fuser_plan = "/tmp/nonexistent_path_123/fuser.plan";
-  config.head_bbox_plan = "/tmp/nonexistent_path_123/head.bbox.plan";
-  config.lidar_backbone_onnx = "/tmp/nonexistent_path_123/lidar.backbone.onnx";
+  auto param = make_test_param();
+  param.camera_model = "/tmp/nonexistent_path_123/camera.backbone.plan";
+  param.camera_vtransform = "/tmp/nonexistent_path_123/camera.vtransform.plan";
+  param.transfusion = "/tmp/nonexistent_path_123/fuser.plan";
+  param.transbbox.model = "/tmp/nonexistent_path_123/head.bbox.plan";
 
-  BEVFusionCore core(config);
+  auto onnx = make_test_onnx();
+  onnx.lidar_backbone = "/tmp/nonexistent_path_123/lidar.backbone.onnx";
+
+  BEVFusionCore core(param, onnx);
   REQUIRE_FALSE(core.checkModelFilesExist());
 }
 
@@ -136,8 +145,7 @@ TEST_CASE("BEVFusionCore: checkModelFilesExist returns false when model files ar
 // =============================================================================
 TEST_CASE("BEVFusionCore: compileTrtModel returns false when ONNX file is missing", "[core][fast]")
 {
-  BEVFusionInputConfig config;
-  BEVFusionCore core(config);
+  BEVFusionCore core(make_test_param(), make_test_onnx());
 
   bool success = core.compileTrtModel(
     "missing_model", "/tmp/nonexistent_dir_abc/missing.onnx", "/tmp/nonexistent_dir_abc/missing.plan");
@@ -153,7 +161,7 @@ TEST_CASE("BEVFusionCore: compileTrtModel returns false when ONNX file is missin
 // =============================================================================
 TEST_CASE("BEVFusionCore: infer returns empty vector when not initialized", "[core][fast]")
 {
-  BEVFusionCore core(make_test_config());
+  BEVFusionCore core(make_test_param(), make_test_onnx());
   REQUIRE(core.infer({}, {}, 0).empty());
 }
 
@@ -165,7 +173,7 @@ TEST_CASE("BEVFusionCore: infer returns empty vector when not initialized", "[co
 // =============================================================================
 TEST_CASE("BEVFusionCore: updateCalibration does not crash when not initialized", "[core][fast]")
 {
-  BEVFusionCore core(make_test_config());
+  BEVFusionCore core(make_test_param(), make_test_onnx());
   REQUIRE_NOTHROW(core.updateCalibration({}, {}, {}, {}));
 }
 
@@ -177,7 +185,7 @@ TEST_CASE("BEVFusionCore: updateCalibration does not crash when not initialized"
 // =============================================================================
 TEST_CASE("BEVFusionCore: hasCalibration tracks state correctly", "[core][fast]")
 {
-  BEVFusionCore core(make_test_config());
+  BEVFusionCore core(make_test_param(), make_test_onnx());
 
   // 1. Should be false initially
   REQUIRE_FALSE(core.hasCalibration());
@@ -194,7 +202,7 @@ TEST_CASE("BEVFusionCore: hasCalibration tracks state correctly", "[core][fast]"
 // =============================================================================
 TEST_CASE("BEVFusionCore: updateCalibration sets hasCalibration flag and calls pipeline", "[core][fast]")
 {
-  BEVFusionCore core(make_test_config());
+  BEVFusionCore core(make_test_param(), make_test_onnx());
   auto mock_pipeline = std::make_shared<MockCore>();
   core.pipeline_ = mock_pipeline;
   core.initialized_ = true;  // Fake initialization
@@ -214,7 +222,7 @@ TEST_CASE("BEVFusionCore: updateCalibration sets hasCalibration flag and calls p
 // =============================================================================
 TEST_CASE("BEVFusionCore: infer() forwards data and translates BoundingBox correctly", "[core][fast]")
 {
-  BEVFusionCore core(make_test_config());
+  BEVFusionCore core(make_test_param(), make_test_onnx());
   auto mock_pipeline = std::make_shared<MockCore>();
   core.pipeline_ = mock_pipeline;
   core.initialized_ = true;
@@ -297,7 +305,7 @@ TEST_CASE("BEVFusionCore: infer() produces a SegMap only when seg_enabled", "[co
 
   SECTION("disabled")
   {
-    BEVFusionCore core(make_test_config());
+    BEVFusionCore core(make_test_param(), make_test_onnx());
     core.pipeline_ = std::make_shared<MockCore>();
     core.initialized_ = true;
     core.has_calibration_ = true;
@@ -309,10 +317,10 @@ TEST_CASE("BEVFusionCore: infer() produces a SegMap only when seg_enabled", "[co
 
   SECTION("enabled")
   {
-    auto config = make_test_config();
-    config.seg_enabled = true;
-    config.seg_num_classes = 6;
-    BEVFusionCore core(config);
+    auto onnx = make_test_onnx();
+    onnx.seg_enabled = true;
+    onnx.seg_num_classes = 6;
+    BEVFusionCore core(make_test_param(), onnx);
     core.pipeline_ = std::make_shared<MockCore>();
     core.initialized_ = true;
     core.has_calibration_ = true;
