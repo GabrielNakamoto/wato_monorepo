@@ -51,6 +51,7 @@ bevfusion_node:
     # --- BEV Map Segmentation ---
     # Currently publishes a placeholder map (road ahead, divider on the left) until the CUDA seg head is ready
     seg_enabled: false  # true: publish one nav_msgs/OccupancyGrid per class
+    seg_num_classes: 6 # nuscenes classes
     seg_topic_prefix: "/perception/bev_seg"  # Topics are <prefix>/<class name>
     seg_class_names:  # Must match the seg model's class order
       - "drivable_area"
@@ -59,6 +60,7 @@ bevfusion_node:
       - "stop_line"
       - "carpark_area"
       - "divider"
+    seg_confidence_threshold: 0.4
 
     # ApproximateTime synchronization
     sync_queue_size: 5

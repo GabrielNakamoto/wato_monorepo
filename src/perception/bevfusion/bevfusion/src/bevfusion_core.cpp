@@ -56,40 +56,6 @@ public:
 TrtLogger g_trt_logger;
 }  // namespace
 
-SegMap makePlaceholderSegMap(int num_classes)
-{
-  // Expected nuScenes map grid: x, y in [-50, 50) m at 0.5 m per pixel
-  SegMap seg;
-  seg.num_classes = std::max(num_classes, 0);
-  seg.height = 200;
-  seg.width = 200;
-  seg.resolution = 0.5f;
-  seg.origin_x = -50.0f;
-  seg.origin_y = -50.0f;
-  seg.masks.assign(static_cast<size_t>(seg.num_classes) * seg.height * seg.width, 0);
-  if (seg.num_classes == 0) {
-    return seg;
-  }
-
-  const auto set_region = [&seg](int cls, float x_min, float x_max, float y_min, float y_max) {
-    for (int row = 0; row < seg.height; ++row) {
-      const float x = seg.origin_x + (static_cast<float>(row) + 0.5f) * seg.resolution;
-      if (x < x_min || x >= x_max) continue;
-      for (int col = 0; col < seg.width; ++col) {
-        const float y = seg.origin_y + (static_cast<float>(col) + 0.5f) * seg.resolution;
-        if (y < y_min || y >= y_max) continue;
-        seg.masks[static_cast<size_t>(cls) * seg.height * seg.width + static_cast<size_t>(row) * seg.width + col] = 1;
-      }
-    }
-  };
-
-  // drivable_area: an 8 m wide corridor that only extends forward (+x)
-  set_region(0, 0.0f, 40.0f, -4.0f, 4.0f);
-  // divider: a thin line 2 m to the left (+y), only in front of the vehicle
-  set_region(seg.num_classes - 1, 0.0f, 40.0f, 2.0f, 2.5f);
-  return seg;
-}
-
 BEVFusionCore::BEVFusionCore(::bevfusion::CoreParameter param, BEVFusionONNXConfig onnx_config)
 : param_(param), onnx_config_(onnx_config)
 {}
@@ -207,6 +173,7 @@ std::vector<BoundingBox> BEVFusionCore::infer(
   //   The `reinterpret_cast` is used to cast this pointer to `const nvtype::half*`, which is the expected type for the vendor library API.
   //   Could have also used memcpy to manually copy bits from __half to nvtype::half since they are bitwise identical.
   // - Use .data() for underlying array
+  // - returns pair of (1) 3d bounding box detections (2) (optional) classified 2d map segmentations
   auto head_outputs = pipeline_->forward(
     const_cast<const unsigned char **>(camera_images.data()),
     reinterpret_cast<const nvtype::half *>(lidar_half_buf_.data()),
@@ -228,10 +195,26 @@ std::vector<BoundingBox> BEVFusionCore::infer(
     result.push_back(box);
   }
 
-  // TODO(lane seg): replace with the vendor's get_seg_map() once the CUDA seg head lands in wato-cuda-bevfusion.
-  // placeholder map is static => build it once.
-  if (onnx_config_.seg_enabled && seg_map_.masks.empty()) {
-    seg_map_ = makePlaceholderSegMap(onnx_config_.seg_num_classes);
+  auto map = head_outputs.second;
+  if (param_.seg_enabled) {
+    // Expected nuScenes map grid: x, y in [-50, 50) m at 0.5 m per pixel
+    SegMap segmap;
+    seg.num_classes = std::max(param_.seg_num_classes, 0);
+    seg.height = 200;
+    seg.width = 200;
+    seg.resolution = 0.5f;
+    seg.origin_x = -50.0f;
+    seg.origin_y = -50.0f;
+    seg.masks.assign(static_cast<size_t>(seg.num_classes) * seg.height * seg.width, 0);
+
+    if (seg.height != map.height || seg.width != map.width || seg.num_classes != map.classes) {
+      std::cerr << "[BEVFusionCore] ERROR: segmentation map config doesn't match decoded" << std::endl;
+      return result;
+    }
+
+    for (std::size_t i=0; i < map.numel(); ++i) {
+      seg.masks[i] = map.data[i] > param_.seg_confidence_threshold ? 1 : 0;
+    }
   }
   return result;
 }

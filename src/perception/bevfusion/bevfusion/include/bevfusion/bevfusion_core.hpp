@@ -38,8 +38,6 @@ struct BEVFusionONNXConfig
   std::string camera_backbone;
   std::string camera_vtransform;
   std::string fuser;
-  bool seg_enabled = false;
-  int seg_num_classes = 6;
 };
 
 /**

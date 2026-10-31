@@ -168,8 +168,6 @@ void BEVFusionNode::declareParameters()
   onnx_config_.head_bbox = model_dir + "/head.bbox.onnx";
   onnx_config_.head_segmap = model_dir + "/head.segmap.onnx";
   onnx_config_.lidar_backbone = model_dir + "/lidar.backbone.xyz.onnx";
-  onnx_config_.seg_enabled = seg_enabled_;
-  onnx_config_.seg_num_classes = static_cast<int>(seg_class_names_.size());
 
   core_ = std::make_unique<BEVFusionCore>(parameterizeInference(), onnx_config_);
 }
