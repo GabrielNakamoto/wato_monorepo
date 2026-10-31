@@ -122,6 +122,11 @@ bool BEVFusionCore::initialize()
     return false;
   }
 
+  // Expected nuScenes map grid: x, y in [-50, 50) m at 0.5 m per pixel
+  seg_map_.resolution = 0.5f;
+  seg_map_.origin_x = -50.0f;
+  seg_map_.origin_y = -50.0f;
+
   initialized_ = true;
   return true;
 }
@@ -179,42 +184,33 @@ std::vector<BoundingBox> BEVFusionCore::infer(
     reinterpret_cast<const nvtype::half *>(lidar_half_buf_.data()),
     num_points,
     stream_);
+
   auto detections = head_outputs.first;
 
   // map vendor type to our bounding box type
   std::vector<BoundingBox> result;
-  result.reserve(detections.size());
-  for (const auto & d : detections) {
-    BoundingBox box;
-    box.position = {d.position.x, d.position.y, d.position.z};
-    box.size = {d.size.w, d.size.l, d.size.h};
-    box.velocity = {d.velocity.vx, d.velocity.vy};
-    box.z_rotation = d.z_rotation;
-    box.score = d.score;
-    box.id = d.id;
-    result.push_back(box);
+  // NOTE: SwinT doesn't have detection head, only segmentation outputs for dev testing currently
+  if (! param_.segmap.enabled) {
+    result.reserve(detections.size());
+    for (const auto & d : detections) {
+      BoundingBox box;
+      box.position = {d.position.x, d.position.y, d.position.z};
+      box.size = {d.size.w, d.size.l, d.size.h};
+      box.velocity = {d.velocity.vx, d.velocity.vy};
+      box.z_rotation = d.z_rotation;
+      box.score = d.score;
+      box.id = d.id;
+      result.push_back(box);
+    }
   }
 
-  auto map = head_outputs.second;
-  if (param_.seg_enabled) {
-    // Expected nuScenes map grid: x, y in [-50, 50) m at 0.5 m per pixel
-    SegMap segmap;
-    seg.num_classes = std::max(param_.seg_num_classes, 0);
-    seg.height = 200;
-    seg.width = 200;
-    seg.resolution = 0.5f;
-    seg.origin_x = -50.0f;
-    seg.origin_y = -50.0f;
-    seg.masks.assign(static_cast<size_t>(seg.num_classes) * seg.height * seg.width, 0);
-
-    if (seg.height != map.height || seg.width != map.width || seg.num_classes != map.classes) {
-      std::cerr << "[BEVFusionCore] ERROR: segmentation map config doesn't match decoded" << std::endl;
-      return result;
-    }
-
-    for (std::size_t i=0; i < map.numel(); ++i) {
-      seg.masks[i] = map.data[i] > param_.seg_confidence_threshold ? 1 : 0;
-    }
+  // update segmentation map
+  if (param_.segmap.enabled) {
+    auto map = head_outputs.second;
+    seg_map_.num_classes = map.classes;
+    seg_map_.height = map.height;
+    seg_map_.width = map.width;
+    seg_map_.masks.assign(map.data, map.data + map.numel());
   }
   return result;
 }

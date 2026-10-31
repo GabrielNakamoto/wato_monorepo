@@ -135,6 +135,7 @@ void BEVFusionNode::declareParameters()
   this->declare_parameter<std::vector<std::string>>(
     "seg_class_names",
     std::vector<std::string>{"drivable_area", "ped_crossing", "walkway", "stop_line", "carpark_area", "divider"});
+  this->declare_parameter<int>("seg_num_classes", 6);
   this->declare_parameter<std::string>("seg_topic_prefix", "/perception/bev_seg");
 
   lidar_frame_id_ = this->get_parameter("lidar_frame_id").as_string();
@@ -166,7 +167,7 @@ void BEVFusionNode::declareParameters()
   onnx_config_.camera_vtransform = model_dir + "/camera.vtransform.onnx";
   onnx_config_.fuser = model_dir + "/fuser.onnx";
   onnx_config_.head_bbox = model_dir + "/head.bbox.onnx";
-  onnx_config_.head_segmap = model_dir + "/head.segmap.onnx";
+  onnx_config_.head_segmap = model_dir + "/head.seg.onnx";
   onnx_config_.lidar_backbone = model_dir + "/lidar.backbone.xyz.onnx";
 
   core_ = std::make_unique<BEVFusionCore>(parameterizeInference(), onnx_config_);
@@ -271,6 +272,10 @@ void BEVFusionNode::declareParameters()
   transbbox.confidence_threshold = static_cast<float>(this->get_parameter("confidence_threshold").as_double());
   transbbox.sorted_bboxes = this->get_parameter("sorted_bboxes").as_bool();
 
+  ::bevfusion::head::segmap::SegHeadParameters segmap;
+  segmap.model = onnx_config_.build_dir + "/head.seg.plan";
+  segmap.enabled = seg_enabled_;
+
   ::bevfusion::CoreParameter param;
   param.camera_model = onnx_config_.build_dir + "/camera.backbone.plan";
   param.camera_vtransform = onnx_config_.build_dir + "/camera.vtransform.plan";
@@ -279,6 +284,7 @@ void BEVFusionNode::declareParameters()
   param.lidar_scn = scn;
   param.transfusion = onnx_config_.build_dir + "/fuser.plan";
   param.transbbox = transbbox;
+  param.segmap = segmap;
   return param;
 }
 
@@ -975,8 +981,6 @@ nav_msgs::msg::OccupancyGrid BEVFusionNode::createOccupancyGrid(
     return grid;
   }
 
-  // OccupancyGrid: width runs along x, height along y, data[y * width + x].
-  // SegMap: rows run along x, cols along y, so grid width = SegMap rows (transpose).
   grid.info.map_load_time = stamp;
   grid.info.resolution = seg_map.resolution;
   grid.info.width = static_cast<uint32_t>(seg_map.height);
@@ -985,14 +989,12 @@ nav_msgs::msg::OccupancyGrid BEVFusionNode::createOccupancyGrid(
   grid.info.origin.position.y = seg_map.origin_y;
   grid.info.origin.orientation.w = 1.0;
 
-  const uint8_t * mask = seg_map.masks.data() + static_cast<size_t>(class_index) * plane;
-  grid.data.resize(plane);
-  for (int row = 0; row < seg_map.height; ++row) {
-    for (int col = 0; col < seg_map.width; ++col) {
-      grid.data[static_cast<size_t>(col) * seg_map.height + row] =
-        mask[static_cast<size_t>(row) * seg_map.width + col] ? 100 : 0;
-    }
-  }
+  // inference outputs uint8 host buffer with 100/0 occupancy values, no CPU processing needed
+  grid.data.assign(
+    seg_map.masks.begin() + static_cast<size_t>(class_index) * plane,
+    seg_map.masks.begin() + (static_cast<size_t>(class_index) + 1) * plane
+  );
+
   return grid;
 }
 

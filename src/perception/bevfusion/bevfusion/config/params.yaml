@@ -60,7 +60,6 @@ bevfusion_node:
       - "stop_line"
       - "carpark_area"
       - "divider"
-    seg_confidence_threshold: 0.4
 
     # ApproximateTime synchronization
     sync_queue_size: 5

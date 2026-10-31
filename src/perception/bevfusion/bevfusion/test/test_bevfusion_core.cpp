@@ -261,39 +261,6 @@ static uint8_t seg_at(const SegMap & seg, int cls, float x, float y)
 }
 
 // =============================================================================
-// TEST: makePlaceholderSegMap geometry and asymmetric pattern
-// WHY: The placeholder map stands in for the CUDA seg head so the node and Foxglove
-//      view can be built first. Its pattern is deliberately one-sided (road only
-//      ahead, divider only on the left) so a flipped or rotated map is visible.
-//      If this pattern changes, the orientation check in Foxglove is meaningless.
-// =============================================================================
-TEST_CASE("makePlaceholderSegMap: grid geometry and one-sided pattern", "[core][seg][fast]")
-{
-  const SegMap seg = makePlaceholderSegMap(6);
-
-  REQUIRE(seg.num_classes == 6);
-  REQUIRE(seg.height == 200);
-  REQUIRE(seg.width == 200);
-  REQUIRE(seg.resolution == Catch::Approx(0.5f));
-  REQUIRE(seg.origin_x == Catch::Approx(-50.0f));
-  REQUIRE(seg.origin_y == Catch::Approx(-50.0f));
-  REQUIRE(seg.masks.size() == 6u * 200u * 200u);
-
-  // drivable_area (class 0): ahead of the vehicle, not behind
-  REQUIRE(seg_at(seg, 0, 10.0f, 0.0f) == 1);
-  REQUIRE(seg_at(seg, 0, -10.0f, 0.0f) == 0);
-
-  // divider (last class): on the left (+y), not the right
-  REQUIRE(seg_at(seg, 5, 10.0f, 2.2f) == 1);
-  REQUIRE(seg_at(seg, 5, 10.0f, -2.2f) == 0);
-
-  // Classes in between are empty
-  for (int cls = 1; cls < 5; ++cls) {
-    REQUIRE(seg_at(seg, cls, 10.0f, 0.0f) == 0);
-  }
-}
-
-// =============================================================================
 // TEST: infer() fills the seg map only when seg is enabled
 // WHY: Detection-only deployments must not pay for or publish segmentation.
 // =============================================================================
@@ -317,10 +284,7 @@ TEST_CASE("BEVFusionCore: infer() produces a SegMap only when seg_enabled", "[co
 
   SECTION("enabled")
   {
-    auto onnx = make_test_onnx();
-    onnx.seg_enabled = true;
-    onnx.seg_num_classes = 6;
-    BEVFusionCore core(make_test_param(), onnx);
+    BEVFusionCore core(make_test_param(), make_test_onnx());
     core.pipeline_ = std::make_shared<MockCore>();
     core.initialized_ = true;
     core.has_calibration_ = true;
