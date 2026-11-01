@@ -245,7 +245,12 @@ bool BEVFusionCore::checkModelFilesExist() const
     std::cerr << "[BEVFusionCore] MISSING: fuser_plan='" << param_.transfusion << "'" << std::endl;
     result = false;
   }
-  if (!std::filesystem::exists(param_.transbbox.model)) {
+  if (param_.segmap.enabled) {
+    if (!std::filesystem::exists(param_.segmap.model)) {
+      std::cerr << "[BEVFusionCore] MISSING: head_seg_plan='" << param_.segmap.model << "'" << std::endl;
+      result = false;
+    }
+  } else if (!std::filesystem::exists(param_.transbbox.model)) {
     std::cerr << "[BEVFusionCore] MISSING: head_bbox_plan='" << param_.transbbox.model << "'" << std::endl;
     result = false;
   }
@@ -272,7 +277,11 @@ bool BEVFusionCore::buildTRTEngines() const
   if (!compileTrtModel("camera.vtransform", onnx_config_.camera_vtransform, build_dir / "camera.vtransform.plan")) {
     return false;
   }
-  if (!compileTrtModel("head.bbox", onnx_config_.head_bbox, build_dir / "head.bbox.plan")) {
+  if (param_.segmap.enabled) {
+    if (!compileTrtModel("head.seg", onnx_config_.head_segmap, build_dir / "head.seg.plan")) {
+      return false;
+    }
+  } else if (!compileTrtModel("head.bbox", onnx_config_.head_bbox, build_dir / "head.bbox.plan")) {
     return false;
   }
 

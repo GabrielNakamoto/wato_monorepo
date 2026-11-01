@@ -38,6 +38,7 @@
 #include <sensor_msgs/msg/compressed_image.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <message_filters/subscriber.h>
+#include <foxglove_msgs/msg/grid.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/synchronizer.h>
@@ -284,7 +285,15 @@ private:
     const SegMap & seg_map, int class_index, const builtin_interfaces::msg::Time & stamp) const;
 
   /**
-   * @brief Publish the core's latest SegMap, one OccupancyGrid per class.
+   * @brief Convert a SegMap into a Foxglove Grid with per-class RGBA colours.
+   * @param seg_map Segmentation map from the core
+   * @param stamp Timestamp for the grid
+   * @return foxglove_msgs::msg::Grid with red/green/blue/alpha fields
+   */
+  foxglove_msgs::msg::Grid createSegGrid(const SegMap & seg_map, const builtin_interfaces::msg::Time & stamp) const;
+
+  /**
+   * @brief Publish the core's latest SegMap, one OccupancyGrid per class and a coloured Foxglove Grid.
    * @param stamp Timestamp for the grids
    */
   void publishSegMap(const builtin_interfaces::msg::Time & stamp);
@@ -341,6 +350,7 @@ private:
   rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   std::vector<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::OccupancyGrid>::SharedPtr>
     seg_pubs_;  // One per class
+  rclcpp_lifecycle::LifecyclePublisher<foxglove_msgs::msg::Grid>::SharedPtr seg_grid_pub_;
 
   // Subscribers
   std::shared_ptr<LidarSub> lidar_sub_;

@@ -953,7 +953,7 @@ visualization_msgs::msg::MarkerArray BEVFusionNode::createMarkers(
     marker.scale.z = det.bbox.size.z;
 
     const int class_id = det.results.empty() ? -1 : std::stoi(det.results[0].hypothesis.class_id);
-    BoxColor color = getBoxColor(class_id);
+    Color color = getBoxColor(class_id);
     marker.color.r = color.r;
     marker.color.g = color.g;
     marker.color.b = color.b;
@@ -990,10 +990,66 @@ nav_msgs::msg::OccupancyGrid BEVFusionNode::createOccupancyGrid(
   grid.info.origin.orientation.w = 1.0;
 
   // inference outputs uint8 host buffer with 100/0 occupancy values, no CPU processing needed
+  // transpose to BEV/OccupancyGrid major convention fused into ONNX plan
   grid.data.assign(
     seg_map.masks.begin() + static_cast<size_t>(class_index) * plane,
     seg_map.masks.begin() + (static_cast<size_t>(class_index) + 1) * plane
   );
+
+  return grid;
+}
+
+foxglove_msgs::msg::Grid BEVFusionNode::createSegGrid(
+  const SegMap & seg_map, const builtin_interfaces::msg::Time & stamp) const
+{
+  foxglove_msgs::msg::Grid grid;
+  grid.timestamp = stamp;
+  grid.frame_id = lidar_frame_id_;
+  grid.pose.position.x = seg_map.origin_x;
+  grid.pose.position.y = seg_map.origin_y;
+  grid.pose.orientation.w = 1.0;
+  grid.column_count = static_cast<uint32_t>(seg_map.width);
+  grid.cell_size.x = seg_map.resolution;
+  grid.cell_size.y = seg_map.resolution;
+
+  constexpr uint32_t kBytesPerCell = 4;
+  grid.row_stride = grid.column_count * kBytesPerCell;
+  grid.cell_stride = kBytesPerCell;
+
+  const auto make_field = [](const std::string & name, uint32_t offset) {
+    foxglove_msgs::msg::PackedElementField field;
+    field.name = name;
+    field.offset = offset;
+    field.type = foxglove_msgs::msg::PackedElementField::UINT8;
+    return field;
+  };
+  grid.fields = {make_field("red", 0), make_field("green", 1), make_field("blue", 2), make_field("alpha", 3)};
+
+  const size_t cells = static_cast<size_t>(seg_map.width) * static_cast<size_t>(seg_map.height);
+  const size_t required = static_cast<size_t>(seg_map.num_classes) * cells;
+  if (seg_map.num_classes <= 0 || seg_map.masks.size() < required) {
+    return grid;
+  }
+
+  grid.data.assign(cells * kBytesPerCell, 0);
+  for (size_t i = 0; i < cells; ++i) {
+    int class_index = -1;
+    for (int c = 0; c < seg_map.num_classes; ++c) {
+      if (seg_map.masks[static_cast<size_t>(c) * cells + i] > 0) {
+        class_index = c;
+      }
+    }
+    if (class_index < 0) {
+      continue;
+    }
+
+    const Color color = getClassColor(class_index);
+    const size_t offset = i * kBytesPerCell;
+    grid.data[offset + 0] = static_cast<uint8_t>(std::lround(color.r * 255.0f));
+    grid.data[offset + 1] = static_cast<uint8_t>(std::lround(color.g * 255.0f));
+    grid.data[offset + 2] = static_cast<uint8_t>(std::lround(color.b * 255.0f));
+    grid.data[offset + 3] = static_cast<uint8_t>(std::lround(color.a * 255.0f));
+  }
 
   return grid;
 }
@@ -1004,6 +1060,8 @@ void BEVFusionNode::publishSegMap(const builtin_interfaces::msg::Time & stamp)
   if (seg_map.num_classes == 0) {
     return;
   }
+  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "Found %zu segmentation classes", seg_map.num_classes);
+
   if (seg_map.num_classes != static_cast<int>(seg_pubs_.size())) {
     RCLCPP_WARN_THROTTLE(
       this->get_logger(),
@@ -1016,6 +1074,9 @@ void BEVFusionNode::publishSegMap(const builtin_interfaces::msg::Time & stamp)
   }
   for (size_t i = 0; i < seg_pubs_.size(); ++i) {
     seg_pubs_[i]->publish(createOccupancyGrid(seg_map, static_cast<int>(i), stamp));
+  }
+  if (seg_grid_pub_) {
+    seg_grid_pub_->publish(createSegGrid(seg_map, stamp));
   }
 }
 
@@ -1315,6 +1376,7 @@ rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn BEVFus
     }
 
     seg_pubs_.clear();
+    seg_grid_pub_.reset();
     if (seg_enabled_) {
       for (const auto & class_name : seg_class_names_) {
         auto pub =
@@ -1322,6 +1384,9 @@ rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn BEVFus
         pub->on_activate();
         seg_pubs_.push_back(pub);
       }
+      seg_grid_pub_ =
+        this->create_publisher<foxglove_msgs::msg::Grid>(seg_topic_prefix_ + "/grid", publisher_qos_);
+      seg_grid_pub_->on_activate();
     }
 
     if (diagnostic_updater_ && detection_pub_) {
@@ -1390,6 +1455,9 @@ rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn BEVFus
   for (const auto & pub : seg_pubs_) {
     pub->on_deactivate();
   }
+  if (seg_grid_pub_) {
+    seg_grid_pub_->on_deactivate();
+  }
 
   raw_sync_.reset();
   compressed_sync_.reset();
@@ -1425,6 +1493,7 @@ rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn BEVFus
   detection_pub_.reset();
   marker_pub_.reset();
   seg_pubs_.clear();
+  seg_grid_pub_.reset();
   pub_diagnostic_.reset();
   diagnostic_updater_.reset();
   tf_listener_.reset();
@@ -1473,6 +1542,7 @@ rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn BEVFus
   detection_pub_.reset();
   marker_pub_.reset();
   seg_pubs_.clear();
+  seg_grid_pub_.reset();
   pub_diagnostic_.reset();
   diagnostic_updater_.reset();
   tf_listener_.reset();
