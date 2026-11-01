@@ -161,20 +161,13 @@ void BEVFusionNode::declareParameters()
   num_features_ = this->get_parameter("num_features").as_int();
   max_points_ = this->get_parameter("max_points").as_int();
 
-  const std::string model_dir = this->get_parameter("model_dir").as_string();
-  onnx_config_.build_dir = model_dir + "/build";
-  onnx_config_.camera_backbone = model_dir + "/camera.backbone.onnx";
-  onnx_config_.camera_vtransform = model_dir + "/camera.vtransform.onnx";
-  onnx_config_.fuser = model_dir + "/fuser.onnx";
-  onnx_config_.head_bbox = model_dir + "/head.bbox.onnx";
-  onnx_config_.head_segmap = model_dir + "/head.seg.onnx";
-  onnx_config_.lidar_backbone = model_dir + "/lidar.backbone.xyz.onnx";
-
-  core_ = std::make_unique<BEVFusionCore>(parameterizeInference(), onnx_config_);
+  config_ = buildInputConfig();
+  core_ = std::make_unique<BEVFusionCore>(config_);
 }
 
-// configure parameters for CUDA inference engine once at configure-time based on ROS params passed into Node
-::bevfusion::CoreParameter BEVFusionNode::parameterizeInference()
+// Build the core input config once at configure-time from ROS params. The core only
+// ever sees BEVFusionInputConfig, so vendor/CUDA parameter structs stay in the node.
+BEVFusionInputConfig BEVFusionNode::buildInputConfig()
 {
   const auto to_float_vec = [this](const std::string & name) {
     const auto d = this->get_parameter(name).as_double_array();
@@ -185,107 +178,65 @@ void BEVFusionNode::declareParameters()
     return std::vector<int>(d.begin(), d.end());
   };
 
-  const int image_width = this->get_parameter("image_width").as_int();
-  const int image_height = this->get_parameter("image_height").as_int();
-  const int norm_width = this->get_parameter("norm_output_width").as_int();
-  const int norm_height = this->get_parameter("norm_output_height").as_int();
-  const int num_cameras = static_cast<int>(camera_names_.size());
+  const std::string model_dir = this->get_parameter("model_dir").as_string();
 
-  ::bevfusion::camera::NormalizationParameter norm;
-  norm.image_width = image_width;
-  norm.image_height = image_height;
-  norm.num_camera = num_cameras;
-  norm.output_width = norm_width;
-  norm.output_height = norm_height;
-  norm.resize_lim = std::max(
-    static_cast<float>(norm_width) / static_cast<float>(image_width),
-    static_cast<float>(norm_height) / static_cast<float>(image_height));
-  norm.interpolation = (this->get_parameter("interpolation").as_string() == "nearest")
-                         ? ::bevfusion::camera::Interpolation::Nearest
-                         : ::bevfusion::camera::Interpolation::Bilinear;
+  BEVFusionInputConfig config;
+  config.model_dir = model_dir;
+  config.build_dir = model_dir + "/build";
+  config.camera_backbone_plan = config.build_dir + "/camera.backbone.plan";
+  config.camera_vtransform_plan = config.build_dir + "/camera.vtransform.plan";
+  config.fuser_plan = config.build_dir + "/fuser.plan";
+  config.head_bbox_plan = config.build_dir + "/head.bbox.plan";
+  config.head_seg_plan = config.build_dir + "/head.seg.plan";
+  config.lidar_backbone_onnx = model_dir + "/lidar.backbone.xyz.onnx";
 
-  const auto norm_mean = to_float_vec("norm_mean");
-  const auto norm_std = to_float_vec("norm_std");
-  norm.method = ::bevfusion::camera::NormMethod::mean_std(
-    norm_mean.data(),
-    norm_std.data(),
-    static_cast<float>(this->get_parameter("norm_scale").as_double()),
-    static_cast<float>(this->get_parameter("norm_bias").as_double()));
+  // Camera normalization & preprocessing
+  config.num_cameras = static_cast<int>(camera_names_.size());
+  config.image_width = image_width_;
+  config.image_height = image_height_;
+  config.norm_output_width = norm_output_width_;
+  config.norm_output_height = norm_output_height_;
+  config.resize_lim = resize_lim_;
+  config.interpolation = this->get_parameter("interpolation").as_string();
+  config.norm_mean = to_float_vec("norm_mean");
+  config.norm_std = to_float_vec("norm_std");
+  config.norm_scale = static_cast<float>(this->get_parameter("norm_scale").as_double());
+  config.norm_bias = static_cast<float>(this->get_parameter("norm_bias").as_double());
 
-  const auto xbound = to_float_vec("xbound");
-  const auto ybound = to_float_vec("ybound");
-  const auto zbound = to_float_vec("zbound");
-  const auto dbound = to_float_vec("dbound");
-  const auto geometry_dim = to_int_vec("geometry_dim");
+  // Camera geometry & feature map dimensions
+  config.xbound = to_float_vec("xbound");
+  config.ybound = to_float_vec("ybound");
+  config.zbound = to_float_vec("zbound");
+  config.dbound = to_float_vec("dbound");
+  config.geometry_dim = to_int_vec("geometry_dim");
+  config.feat_width = this->get_parameter("feat_width").as_int();
+  config.feat_height = this->get_parameter("feat_height").as_int();
 
-  ::bevfusion::camera::GeometryParameter geom;
-  geom.xbound = {xbound[0], xbound[1], xbound[2]};
-  geom.ybound = {ybound[0], ybound[1], ybound[2]};
-  geom.zbound = {zbound[0], zbound[1], zbound[2]};
-  geom.dbound = {dbound[0], dbound[1], dbound[2]};
-  geom.geometry_dim = {geometry_dim[0], geometry_dim[1], geometry_dim[2]};
-  geom.feat_width = this->get_parameter("feat_width").as_int();
-  geom.feat_height = this->get_parameter("feat_height").as_int();
-  geom.image_width = norm_width;
-  geom.image_height = norm_height;
-  geom.num_camera = num_cameras;
+  // LiDAR voxelization & SCN
+  config.min_range = to_float_vec("min_range");
+  config.max_range = to_float_vec("max_range");
+  config.voxel_size = to_float_vec("voxel_size");
+  config.max_points_per_voxel = this->get_parameter("max_points_per_voxel").as_int();
+  config.max_points = this->get_parameter("max_points").as_int();
+  config.max_voxels = this->get_parameter("max_voxels").as_int();
+  config.num_features = this->get_parameter("num_features").as_int();
+  config.scn_order = this->get_parameter("scn_order").as_string();
+  config.precision = this->get_parameter("precision").as_string();
 
-  const auto min_range_vec = to_float_vec("min_range");
-  const auto max_range_vec = to_float_vec("max_range");
-  const auto voxel_size_vec = to_float_vec("voxel_size");
-  const nvtype::Float3 min_range = {min_range_vec[0], min_range_vec[1], min_range_vec[2]};
-  const nvtype::Float3 max_range = {max_range_vec[0], max_range_vec[1], max_range_vec[2]};
-  const nvtype::Float3 voxel_size = {voxel_size_vec[0], voxel_size_vec[1], voxel_size_vec[2]};
+  // Bounding box post-processing & head
+  config.out_size_factor = this->get_parameter("out_size_factor").as_int();
+  config.transbbox_pc_range = to_float_vec("transbbox_pc_range");
+  config.transbbox_voxel_size = to_float_vec("transbbox_voxel_size");
+  config.post_center_range_start = to_float_vec("post_center_range_start");
+  config.post_center_range_end = to_float_vec("post_center_range_end");
+  config.confidence_threshold = static_cast<float>(this->get_parameter("confidence_threshold").as_double());
+  config.sorted_bboxes = this->get_parameter("sorted_bboxes").as_bool();
 
-  ::bevfusion::lidar::VoxelizationParameter voxel;
-  voxel.min_range = min_range;
-  voxel.max_range = max_range;
-  voxel.voxel_size = voxel_size;
-  voxel.grid_size = ::bevfusion::lidar::VoxelizationParameter::compute_grid_size(max_range, min_range, voxel_size);
-  voxel.num_feature = this->get_parameter("num_features").as_int();
-  voxel.max_voxels = this->get_parameter("max_voxels").as_int();
-  voxel.max_points_per_voxel = this->get_parameter("max_points_per_voxel").as_int();
-  voxel.max_points = this->get_parameter("max_points").as_int();
+  // BEV map segmentation
+  config.seg_enabled = seg_enabled_;
+  config.seg_num_classes = this->get_parameter("seg_num_classes").as_int();
 
-  ::bevfusion::lidar::SCNParameter scn;
-  scn.voxelization = voxel;
-  scn.model = onnx_config_.lidar_backbone;
-  scn.order = (this->get_parameter("scn_order").as_string() == "ZYX")
-                ? ::bevfusion::lidar::CoordinateOrder::ZYX
-                : ::bevfusion::lidar::CoordinateOrder::XYZ;
-  scn.precision = (this->get_parameter("precision").as_string() == "int8")
-                    ? ::bevfusion::lidar::Precision::Int8
-                    : ::bevfusion::lidar::Precision::Float16;
-
-  const auto transbbox_pc_range = to_float_vec("transbbox_pc_range");
-  const auto transbbox_voxel_size = to_float_vec("transbbox_voxel_size");
-  const auto post_center_start = to_float_vec("post_center_range_start");
-  const auto post_center_end = to_float_vec("post_center_range_end");
-
-  ::bevfusion::head::transbbox::TransBBoxParameter transbbox;
-  transbbox.model = onnx_config_.build_dir + "/head.bbox.plan";
-  transbbox.out_size_factor = this->get_parameter("out_size_factor").as_int();
-  transbbox.voxel_size = {transbbox_voxel_size[0], transbbox_voxel_size[1]};
-  transbbox.pc_range = {transbbox_pc_range[0], transbbox_pc_range[1]};
-  transbbox.post_center_range_start = {post_center_start[0], post_center_start[1], post_center_start[2]};
-  transbbox.post_center_range_end = {post_center_end[0], post_center_end[1], post_center_end[2]};
-  transbbox.confidence_threshold = static_cast<float>(this->get_parameter("confidence_threshold").as_double());
-  transbbox.sorted_bboxes = this->get_parameter("sorted_bboxes").as_bool();
-
-  ::bevfusion::head::segmap::SegHeadParameters segmap;
-  segmap.model = onnx_config_.build_dir + "/head.seg.plan";
-  segmap.enabled = seg_enabled_;
-
-  ::bevfusion::CoreParameter param;
-  param.camera_model = onnx_config_.build_dir + "/camera.backbone.plan";
-  param.camera_vtransform = onnx_config_.build_dir + "/camera.vtransform.plan";
-  param.geometry = geom;
-  param.normalize = norm;
-  param.lidar_scn = scn;
-  param.transfusion = onnx_config_.build_dir + "/fuser.plan";
-  param.transbbox = transbbox;
-  param.segmap = segmap;
-  return param;
+  return config;
 }
 
 void BEVFusionNode::processFrame(

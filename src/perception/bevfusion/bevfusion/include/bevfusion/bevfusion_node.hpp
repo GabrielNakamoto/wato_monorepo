@@ -122,8 +122,8 @@ private:
    */
   void declareParameters();
 
-  /** @brief Build the CUDA engine parameter struct from ROS params. */
-  ::bevfusion::CoreParameter parameterizeInference();
+  /** @brief Build the core input config from ROS params. */
+  BEVFusionInputConfig buildInputConfig();
 
   /**
    * @brief Main processing callback for synced compressed camera and LiDAR data.
@@ -342,8 +342,8 @@ private:
   std::vector<std::string> seg_class_names_;
   std::string seg_topic_prefix_;
 
-  // Model file layout resolved from model_dir
-  BEVFusionONNXConfig onnx_config_;
+  // Core input config resolved from ROS params
+  BEVFusionInputConfig config_;
 
   // Publishers
   rclcpp_lifecycle::LifecyclePublisher<vision_msgs::msg::Detection3DArray>::SharedPtr detection_pub_;

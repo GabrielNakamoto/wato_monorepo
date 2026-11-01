@@ -56,8 +56,8 @@ public:
 TrtLogger g_trt_logger;
 }  // namespace
 
-BEVFusionCore::BEVFusionCore(::bevfusion::CoreParameter param, BEVFusionONNXConfig onnx_config)
-: param_(param), onnx_config_(onnx_config)
+BEVFusionCore::BEVFusionCore(const BEVFusionInputConfig & config)
+: config_(config)
 {}
 
 BEVFusionCore::~BEVFusionCore()
@@ -107,7 +107,91 @@ bool BEVFusionCore::initialize()
 
   std::cout << "[BEVFusionCore] All required model files exist. Creating core..." << std::endl;
 
-  pipeline_ = ::bevfusion::create_core(param_);
+  // Camera normalization: resize + mean/std normalization applied to each input image before the backbone
+  ::bevfusion::camera::NormalizationParameter norm;
+  norm.image_width = config_.image_width;
+  norm.image_height = config_.image_height;
+  norm.num_camera = config_.num_cameras;
+  norm.output_width = config_.norm_output_width;
+  norm.output_height = config_.norm_output_height;
+  norm.resize_lim = config_.resize_lim;
+  norm.interpolation = (config_.interpolation == "nearest") ? ::bevfusion::camera::Interpolation::Nearest
+                                                            : ::bevfusion::camera::Interpolation::Bilinear;
+  norm.method = ::bevfusion::camera::NormMethod::mean_std(
+    config_.norm_mean.data(), config_.norm_std.data(), config_.norm_scale, config_.norm_bias);
+
+  // Camera geometry: BEV grid bounds and feature map dimensions for lifting image features into 3D space
+  ::bevfusion::camera::GeometryParameter geom;
+  geom.xbound = {config_.xbound[0], config_.xbound[1], config_.xbound[2]};
+  geom.ybound = {config_.ybound[0], config_.ybound[1], config_.ybound[2]};
+  geom.zbound = {config_.zbound[0], config_.zbound[1], config_.zbound[2]};
+  geom.dbound = {config_.dbound[0], config_.dbound[1], config_.dbound[2]};
+  geom.geometry_dim = {config_.geometry_dim[0], config_.geometry_dim[1], config_.geometry_dim[2]};
+  geom.feat_width = config_.feat_width;
+  geom.feat_height = config_.feat_height;
+  // The frustum is built in the augmented (resized + cropped) network-input image space and mapped back through
+  // img_aug_matrix^-1, so this must be the normalization output size, not the raw camera resolution.
+  geom.image_width = config_.norm_output_width;
+  geom.image_height = config_.norm_output_height;
+  geom.num_camera = config_.num_cameras;
+
+  // LiDAR voxelization: divides the point cloud into a 3D grid; grid_size is derived from range and voxel size
+  nvtype::Float3 min_range = {config_.min_range[0], config_.min_range[1], config_.min_range[2]};
+  nvtype::Float3 max_range = {config_.max_range[0], config_.max_range[1], config_.max_range[2]};
+  nvtype::Float3 voxel_size = {config_.voxel_size[0], config_.voxel_size[1], config_.voxel_size[2]};
+
+  ::bevfusion::lidar::VoxelizationParameter voxel;
+  voxel.min_range = min_range;
+  voxel.max_range = max_range;
+  voxel.voxel_size = voxel_size;
+  voxel.grid_size = ::bevfusion::lidar::VoxelizationParameter::compute_grid_size(max_range, min_range, voxel_size);
+  voxel.num_feature = config_.num_features;
+  voxel.max_voxels = config_.max_voxels;
+  voxel.max_points_per_voxel = config_.max_points_per_voxel;
+  voxel.max_points = config_.max_points;
+
+  const auto scn_order =
+    (config_.scn_order == "ZYX") ? ::bevfusion::lidar::CoordinateOrder::ZYX : ::bevfusion::lidar::CoordinateOrder::XYZ;
+  const auto precision =
+    (config_.precision == "int8") ? ::bevfusion::lidar::Precision::Int8 : ::bevfusion::lidar::Precision::Float16;
+
+  // Sparse conv backbone (SCN): processes only non-empty voxels for efficient LiDAR feature extraction
+  ::bevfusion::lidar::SCNParameter scn;
+  scn.voxelization = voxel;
+  scn.model = config_.lidar_backbone_onnx;
+  scn.order = scn_order;
+  scn.precision = precision;
+
+  // Detection head: decodes BEV feature map into 3D bounding boxes and filters by confidence + center range
+  ::bevfusion::head::transbbox::TransBBoxParameter transbbox;
+  transbbox.model = config_.head_bbox_plan;
+  transbbox.out_size_factor = config_.out_size_factor;
+  transbbox.voxel_size = {config_.transbbox_voxel_size[0], config_.transbbox_voxel_size[1]};
+  transbbox.pc_range = {config_.transbbox_pc_range[0], config_.transbbox_pc_range[1]};
+  transbbox.post_center_range_start = {
+    config_.post_center_range_start[0], config_.post_center_range_start[1], config_.post_center_range_start[2]};
+  transbbox.post_center_range_end = {
+    config_.post_center_range_end[0], config_.post_center_range_end[1], config_.post_center_range_end[2]};
+  transbbox.confidence_threshold = config_.confidence_threshold;
+  transbbox.sorted_bboxes = config_.sorted_bboxes;
+
+  // Segmentation head: produces the per-class BEV map instead of bounding boxes
+  ::bevfusion::head::segmap::SegHeadParameters segmap;
+  segmap.model = config_.head_seg_plan;
+  segmap.enabled = config_.seg_enabled;
+
+  // Deserialize all TensorRT engines and allocate GPU buffers for the full pipeline
+  ::bevfusion::CoreParameter param;
+  param.camera_model = config_.camera_backbone_plan;
+  param.camera_vtransform = config_.camera_vtransform_plan;
+  param.geometry = geom;
+  param.normalize = norm;
+  param.lidar_scn = scn;
+  param.transfusion = config_.fuser_plan;
+  param.transbbox = transbbox;
+  param.segmap = segmap;
+
+  pipeline_ = ::bevfusion::create_core(param);
   if (pipeline_ == nullptr) {
     std::cerr << "[BEVFusionCore] ERROR: Failed to create BEVFusion pipeline. Ensure model files exist and GPU memory "
                  "is sufficient."
@@ -152,7 +236,7 @@ std::vector<BoundingBox> BEVFusionCore::infer(
   }
 
   // Ensure lidar points are of expected size.
-  const size_t expected_lidar_floats = static_cast<size_t>(num_points) * static_cast<size_t>(param_.lidar_scn.voxelization.num_feature);
+  const size_t expected_lidar_floats = static_cast<size_t>(num_points) * static_cast<size_t>(config_.num_features);
   if (lidar_points.size() != expected_lidar_floats) {
     std::cerr << "[BEVFusionCore] ERROR: lidar_points.size() (" << lidar_points.size()
               << ") != num_points * num_features (" << expected_lidar_floats << ")" << std::endl;
@@ -190,7 +274,7 @@ std::vector<BoundingBox> BEVFusionCore::infer(
   // map vendor type to our bounding box type
   std::vector<BoundingBox> result;
   // NOTE: SwinT doesn't have detection head, only segmentation outputs for dev testing currently
-  if (! param_.segmap.enabled) {
+  if (! config_.seg_enabled) {
     result.reserve(detections.size());
     for (const auto & d : detections) {
       BoundingBox box;
@@ -205,7 +289,7 @@ std::vector<BoundingBox> BEVFusionCore::infer(
   }
 
   // update segmentation map
-  if (param_.segmap.enabled) {
+  if (config_.seg_enabled) {
     auto map = head_outputs.second;
     seg_map_.num_classes = map.classes;
     seg_map_.height = map.height;
@@ -233,29 +317,30 @@ void BEVFusionCore::updateCalibration(
 bool BEVFusionCore::checkModelFilesExist() const
 {
   bool result = true;
-  if (!std::filesystem::exists(param_.camera_model)) {
-    std::cerr << "[BEVFusionCore] MISSING: camera_backbone_plan='" << param_.camera_model << "'" << std::endl;
+  if (!std::filesystem::exists(config_.camera_backbone_plan)) {
+    std::cerr << "[BEVFusionCore] MISSING: camera_backbone_plan='" << config_.camera_backbone_plan << "'" << std::endl;
     result = false;
   }
-  if (!std::filesystem::exists(param_.camera_vtransform)) {
-    std::cerr << "[BEVFusionCore] MISSING: camera_vtransform_plan='" << param_.camera_vtransform << "'" << std::endl;
+  if (!std::filesystem::exists(config_.camera_vtransform_plan)) {
+    std::cerr << "[BEVFusionCore] MISSING: camera_vtransform_plan='" << config_.camera_vtransform_plan << "'"
+              << std::endl;
     result = false;
   }
-  if (!std::filesystem::exists(param_.transfusion)) {
-    std::cerr << "[BEVFusionCore] MISSING: fuser_plan='" << param_.transfusion << "'" << std::endl;
+  if (!std::filesystem::exists(config_.fuser_plan)) {
+    std::cerr << "[BEVFusionCore] MISSING: fuser_plan='" << config_.fuser_plan << "'" << std::endl;
     result = false;
   }
-  if (param_.segmap.enabled) {
-    if (!std::filesystem::exists(param_.segmap.model)) {
-      std::cerr << "[BEVFusionCore] MISSING: head_seg_plan='" << param_.segmap.model << "'" << std::endl;
+  if (config_.seg_enabled) {
+    if (!std::filesystem::exists(config_.head_seg_plan)) {
+      std::cerr << "[BEVFusionCore] MISSING: head_seg_plan='" << config_.head_seg_plan << "'" << std::endl;
       result = false;
     }
-  } else if (!std::filesystem::exists(param_.transbbox.model)) {
-    std::cerr << "[BEVFusionCore] MISSING: head_bbox_plan='" << param_.transbbox.model << "'" << std::endl;
+  } else if (!std::filesystem::exists(config_.head_bbox_plan)) {
+    std::cerr << "[BEVFusionCore] MISSING: head_bbox_plan='" << config_.head_bbox_plan << "'" << std::endl;
     result = false;
   }
-  if (!std::filesystem::exists(onnx_config_.lidar_backbone)) {
-    std::cerr << "[BEVFusionCore] MISSING: lidar_backbone_onnx='" << onnx_config_.lidar_backbone << "'" << std::endl;
+  if (!std::filesystem::exists(config_.lidar_backbone_onnx)) {
+    std::cerr << "[BEVFusionCore] MISSING: lidar_backbone_onnx='" << config_.lidar_backbone_onnx << "'" << std::endl;
     result = false;
   }
   return result;
@@ -263,25 +348,27 @@ bool BEVFusionCore::checkModelFilesExist() const
 
 bool BEVFusionCore::buildTRTEngines() const
 {
-  const std::filesystem::path build_dir(onnx_config_.build_dir);
+  const std::filesystem::path model_dir(config_.model_dir);
+  const std::filesystem::path build_dir(config_.build_dir);
 
   std::cout << "[BEVFusionCore][buildTRTEngines] Detected TensorRT version: " << NV_TENSORRT_MAJOR << "."
             << NV_TENSORRT_MINOR << std::endl;
 
-  if (!compileTrtModel("camera.backbone", onnx_config_.camera_backbone, build_dir / "camera.backbone.plan")) {
+  if (!compileTrtModel("camera.backbone", model_dir / "camera.backbone.onnx", build_dir / "camera.backbone.plan")) {
     return false;
   }
-  if (!compileTrtModel("fuser", onnx_config_.fuser, build_dir / "fuser.plan")) {
+  if (!compileTrtModel("fuser", model_dir / "fuser.onnx", build_dir / "fuser.plan")) {
     return false;
   }
-  if (!compileTrtModel("camera.vtransform", onnx_config_.camera_vtransform, build_dir / "camera.vtransform.plan")) {
+  if (!compileTrtModel("camera.vtransform", model_dir / "camera.vtransform.onnx", build_dir / "camera.vtransform.plan"))
+  {
     return false;
   }
-  if (param_.segmap.enabled) {
-    if (!compileTrtModel("head.seg", onnx_config_.head_segmap, build_dir / "head.seg.plan")) {
+  if (config_.seg_enabled) {
+    if (!compileTrtModel("head.seg", model_dir / "head.seg.onnx", build_dir / "head.seg.plan")) {
       return false;
     }
-  } else if (!compileTrtModel("head.bbox", onnx_config_.head_bbox, build_dir / "head.bbox.plan")) {
+  } else if (!compileTrtModel("head.bbox", model_dir / "head.bbox.onnx", build_dir / "head.bbox.plan")) {
     return false;
   }
 
@@ -339,7 +426,7 @@ bool BEVFusionCore::compileTrtModel(
   // strongly typed there, so precision comes straight from the ONNX graph's own tensor types.
 #if NV_TENSORRT_MAJOR < 11
   config->setFlag(nvinfer1::BuilderFlag::kFP16);
-  if (param_.lidar_scn.precision == ::bevfusion::lidar::Precision::Int8) {
+  if (config_.precision == "int8") {
     config->setFlag(nvinfer1::BuilderFlag::kINT8);
   }
 #endif
