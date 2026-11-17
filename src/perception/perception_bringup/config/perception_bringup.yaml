@@ -470,7 +470,12 @@ multi_camera_sync:
     input_lidar_topic: "/lidar_cc/velodyne_points"  # Topic for LiDAR point cloud (sensor_msgs/msg/PointCloud2)
 
     # Directory containing all TensorRT .plan and .onnx engine files
-    model_dir: "/opt/watonomous/models/bevfusion/resnet50_trt11_int8"
+    model_dir: "/opt/watonomous/models/bevfusion/dualhead"
+
+    # --- Dual-head (A5 epoch-22) selectors ---
+    precision: "fp16"  # fp16 for the dual-head ONNX; int8 only for the PTQ resnet50int8 model
+    det_enabled: true
+    seg_enabled: true  # publish one nav_msgs/OccupancyGrid per map class
 
     # Camera frame IDs — must match the 6 nuScenes-layout cameras on Eve
     camera_names:

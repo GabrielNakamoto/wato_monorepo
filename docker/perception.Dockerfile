@@ -18,10 +18,12 @@ RUN apt-get update && \
 # upstream CUDA-BEVFusion package.xml as a duplicate to our own bevfusion pkg.
 RUN git clone https://github.com/WATonomous/deep_ros.git deep_ros && \
     git clone https://github.com/WATonomous/camera_aravis2_nitros.git camera_aravis2_nitros && \
-    git clone --recurse-submodules https://github.com/WATonomous/wato-cuda-bevfusion.git wato-cuda-bevfusion && \
+    git clone -b tensorrt-map https://github.com/GabrielNakamoto/wato-cuda-bevfusion.git wato-cuda-bevfusion && \
+    git -C wato-cuda-bevfusion submodule update --init --depth 1 \
+        dependencies/pybind11 dependencies/stb dependencies/dlpack libraries/cuPCL && \
     touch wato-cuda-bevfusion/COLCON_IGNORE && \
     git -C wato-cuda-bevfusion lfs install && \
-    git -C wato-cuda-bevfusion lfs pull
+    git -C wato-cuda-bevfusion lfs pull --include="libraries/**"
 
 COPY src/perception perception
 
