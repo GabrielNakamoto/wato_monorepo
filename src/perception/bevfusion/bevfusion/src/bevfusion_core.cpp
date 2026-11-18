@@ -440,13 +440,19 @@ bool BEVFusionCore::compileTrtModel(
   }
 #endif
 
-  // Force allowed tensor formats on inputs and outputs
+  // Force allowed tensor formats on inputs and outputs.
+  // Tensor formats only exist for weakly typed networks. TRT 11 builds strongly
+  // typed networks (the kSTRONGLY_TYPED flag is deprecated and weak typing is
+  // gone), which reject setAllowedFormats -- bindings take the ONNX graph's own
+  // types there, which is why the graphs are exported as FP16 end to end.
+#if NV_TENSORRT_MAJOR < 11
   for (int i = 0; i < network->getNbInputs(); ++i) {
     network->getInput(i)->setAllowedFormats(1U << static_cast<int>(nvinfer1::TensorFormat::kLINEAR));
   }
   for (int i = 0; i < network->getNbOutputs(); ++i) {
     network->getOutput(i)->setAllowedFormats(1U << static_cast<int>(nvinfer1::TensorFormat::kLINEAR));
   }
+#endif
 
   // Build serialized engine plan
   std::unique_ptr<nvinfer1::IHostMemory> serialized(builder->buildSerializedNetwork(*network, *config));

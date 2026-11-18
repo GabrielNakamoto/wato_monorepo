@@ -127,21 +127,21 @@ launch:
   #         param:
   #           - from: $(var config_file)
 
-  # Load BEVFusion: Multi-modal LiDAR + Camera detection
-  - load_composable_node:
-      target: perception_container
-      composable_node:
-        - pkg: bevfusion
-          plugin: wato::perception::bevfusion::BEVFusionNode
-          name: bevfusion_node
-          namespace: ""
-          extra_arg:
-            - name: use_intra_process_comms
-              value: "true"
-          param:
-            - from: $(var config_file)
-            - from: $(var bevfusion_overrides)
-          remap:
+  # BEVFusion: multi-modal LiDAR + camera detection, dual-head (det + BEV map).
+  # Runs as its own process rather than in perception_container: as a composable
+  # node the lifecycle configure transition fails silently (the same node with the
+  # same params files configures and activates fine standalone), and the GPU
+  # pipeline is better off with its own executor anyway.
+  - node:
+      pkg: bevfusion
+      exec: bevfusion_node
+      name: bevfusion_node
+      namespace: ""
+      output: screen
+      param:
+        - from: $(var config_file)
+        - from: $(var bevfusion_overrides)
+      remap:
             - from: camera_info
               to: /multi_camera_sync/multi_camera_info
             # - from: multi_image
