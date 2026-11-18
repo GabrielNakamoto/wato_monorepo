@@ -137,6 +137,8 @@ void BEVFusionNode::declareParameters()
     "seg_class_names",
     std::vector<std::string>{"drivable_area", "ped_crossing", "walkway", "stop_line", "carpark_area", "divider"});
   this->declare_parameter<int>("seg_num_classes", 6);
+  this->declare_parameter<std::vector<double>>(
+    "seg_class_thresholds", std::vector<double>{});
   this->declare_parameter<std::string>("seg_topic_prefix", "/perception/bev_seg");
 
   lidar_frame_id_ = this->get_parameter("lidar_frame_id").as_string();
@@ -238,6 +240,18 @@ BEVFusionInputConfig BEVFusionNode::buildInputConfig()
   config.det_enabled = det_enabled_;
   config.seg_enabled = seg_enabled_;
   config.seg_num_classes = this->get_parameter("seg_num_classes").as_int();
+  {
+    const auto thr = this->get_parameter("seg_class_thresholds").as_double_array();
+    config.seg_class_thresholds.assign(thr.begin(), thr.end());
+    if (seg_enabled_ && !config.seg_class_thresholds.empty() &&
+        static_cast<int>(config.seg_class_thresholds.size()) != config.seg_num_classes) {
+      RCLCPP_WARN(this->get_logger(),
+                  "seg_class_thresholds has %zu entries but seg_num_classes is %d; "
+                  "falling back to a single threshold",
+                  config.seg_class_thresholds.size(), config.seg_num_classes);
+      config.seg_class_thresholds.clear();
+    }
+  }
 
   return config;
 }

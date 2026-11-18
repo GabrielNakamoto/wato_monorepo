@@ -91,6 +91,10 @@ struct BEVFusionInputConfig
   bool det_enabled = true;  // True to run/publish the 3D object detection head
   bool seg_enabled = false;  // True to produce a BEV segmentation map alongside detections
   int seg_num_classes = 6;  // Number of map classes (6 for the nuScenes map classes)
+  // Per-class probability thresholds, in model class order. Empty -> the head's
+  // single 0.5 threshold. Classes differ in calibration: one value starves the
+  // thin classes (divider, stop_line) and over-fires drivable.
+  std::vector<float> seg_class_thresholds;
 };
 
 /**
